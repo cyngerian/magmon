@@ -10,6 +10,48 @@ from .. import db, create_app # Import create_app to access app context outside 
 # Import all necessary models (with updated names: Game, GameStatus, GameRegistration)
 from ..models import User, Deck, Match, MatchPlayer, Game, GameStatus, GameRegistration, DeckVersion
 
+# --- Game Lifecycle Validation Helpers ---
+
+def validate_game_exists(game_id: int) -> Game:
+    """Get a game by ID or raise 404.
+    
+    This is a common validation used across game and match endpoints
+    since matches are part of a game's lifecycle.
+    """
+    game = Game.query.get_or_404(game_id)
+    return game
+
+def validate_game_status(game: Game, expected_status: GameStatus) -> tuple[dict, int] | None:
+    """Validate game has expected status or return error response.
+    
+    Returns None if valid, otherwise returns (error_response, status_code).
+    Used by both game and match endpoints to ensure proper lifecycle state.
+    """
+    if game.status != expected_status:
+        return {"error": f"Game must be {expected_status.value}"}, 400
+    return None
+
+def validate_game_registrations(game: Game, required_count: int = 2) -> tuple[dict, int] | None:
+    """Validate game has minimum required registrations.
+    
+    Returns None if valid, otherwise returns (error_response, status_code).
+    Used by match submission to ensure enough players are registered.
+    """
+    reg_count = GameRegistration.query.filter_by(game_id=game.id).count()
+    if reg_count < required_count:
+        return {"error": f"Game must have at least {required_count} registered players"}, 400
+    return None
+
+def validate_match_status(match: Match, expected_status: str = 'pending') -> tuple[dict, int] | None:
+    """Validate match has expected status or return error response.
+    
+    Returns None if valid, otherwise returns (error_response, status_code).
+    Used by match approval/rejection endpoints.
+    """
+    if match.status != expected_status:
+        return {"error": f"Match must be {expected_status}"}, 400
+    return None
+
 @bp.route('/register', methods=['POST'])
 def register_user():
     """ User registration endpoint. """
@@ -670,20 +712,35 @@ def upload_avatar():
 # or by a web server like Nginx in production. No separate route needed here usually.
 
 
-# ================== Match Routes ==================
+# ================== Game Results Routes ==================
 
 @bp.route('/matches', methods=['POST'])
 @jwt_required()
 def submit_match():
-    """ Submit match results (placements, times, notes) for a specific Game. """
+    """Submit results for a completed game.
+    
+    This represents the completion phase of a game's lifecycle:
+    1. Validates game exists and is in UPCOMING status
+    2. Validates all registered players have placements
+    3. Creates a Match record to store results
+    4. Updates game status to COMPLETED (pending approval)
+    
+    The match will be in 'pending' status until approved by another user,
+    at which point the game's COMPLETED status becomes final.
+    """
     data = request.get_json()
     if not data: return jsonify({"error": "No input data provided"}), 400
     current_user_id = get_jwt_identity() # Get submitter from token
     required_fields = ['game_id', 'placements'] # submitted_by_id comes from token
-    if not all(field in data for field in required_fields): return jsonify({"error": "Missing required fields (game_id, placements)"}), 400
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": "Missing required fields (game_id, placements)"}), 400
 
-    game = Game.query.get(data['game_id'])
-    if not game: return jsonify({"error": "Game not found"}), 404
+    # Use validation helpers
+    game = validate_game_exists(data['game_id'])
+    if error := validate_game_status(game, GameStatus.UPCOMING):
+        return jsonify(error[0]), error[1]
+    if error := validate_game_registrations(game, required_count=2):
+        return jsonify(error[0]), error[1]
 
     placements_data = data.get('placements')
     if not isinstance(placements_data, list) or len(placements_data) < 2: return jsonify({"error": "'placements' must be a list with at least 2 participants"}), 400
@@ -754,7 +811,19 @@ def submit_match():
 
 @bp.route('/matches', methods=['GET'])
 def get_matches():
-    """ Gets a list of matches, optionally filtered by status. """
+    """Get a list of completed games with their results.
+    
+    This endpoint returns games that have had results submitted,
+    optionally filtered by approval status:
+    - pending: Results submitted but not yet approved
+    - approved: Results approved and final
+    
+    Each result includes:
+    - Game details (date, status)
+    - Player count
+    - Submission details (who, when)
+    - Approval details (who, when) if approved
+    """
     status_filter = request.args.get('status')
     query = Match.query
     if status_filter:
@@ -782,10 +851,19 @@ def get_matches():
 @bp.route('/matches/<int:match_id>/approve', methods=['PATCH'])
 @jwt_required()
 def approve_match(match_id):
-    """ Approves a pending match result. """
+    """Approve game results, finalizing the game's completion.
+    
+    This represents the final phase of a game's lifecycle:
+    1. Validates match exists and is in pending status
+    2. Validates approver is not the same as submitter
+    3. Updates match status to approved
+    4. Game status remains COMPLETED
+    
+    Once approved, the game results are final and cannot be changed.
+    """
     match = Match.query.get_or_404(match_id)
-    if match.status != 'pending':
-        return jsonify({"error": "Match is not pending approval"}), 400
+    if error := validate_match_status(match, 'pending'):
+        return jsonify(error[0]), error[1]
 
     approver_id = get_jwt_identity() # Approver is the logged-in user
     data = request.get_json() # Still need data for notes
@@ -815,14 +893,22 @@ def approve_match(match_id):
         current_app.logger.error(f"Error approving match: {e}")
         return jsonify({"error": "Match approval failed"}), 500
 
-# Add route for rejecting a match
 @bp.route('/matches/<int:match_id>/reject', methods=['PATCH'])
 @jwt_required()
 def reject_match(match_id):
-    """ Rejects a pending match result, setting status back to allow re-submission or deletion. """
+    """Reject game results, allowing resubmission.
+    
+    This represents a reset in the game's lifecycle:
+    1. Validates match exists and is in pending status
+    2. Clears approval-related fields
+    3. Updates match status back to pending
+    4. Resets game status to UPCOMING
+    
+    After rejection, new results can be submitted for the game.
+    """
     match = Match.query.get_or_404(match_id)
-    if match.status != 'pending':
-        return jsonify({"error": "Match is not pending approval"}), 400
+    if error := validate_match_status(match, 'pending'):
+        return jsonify(error[0]), error[1]
 
     rejector_id = get_jwt_identity() # Rejector is the logged-in user
     data = request.get_json() # Still need data for notes
@@ -863,7 +949,17 @@ def reject_match(match_id):
 
 @bp.route('/matches/<int:match_id>', methods=['GET'])
 def get_match_details(match_id):
-    """ Gets the full details for a specific match, including players and placements. """
+    """Get detailed results for a completed game.
+    
+    Returns comprehensive information about a game's results:
+    1. Game metadata (date, status)
+    2. Player results (placements, decks used)
+    3. Game notes (interactions, rules discussions)
+    4. Submission/approval details
+    
+    Uses eager loading to efficiently fetch all related data
+    in a single query.
+    """
     # Eager load related objects to prevent N+1 queries
     match = Match.query.options(
         db.joinedload(Match.submitter), # Eager load submitter

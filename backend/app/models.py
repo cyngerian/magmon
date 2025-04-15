@@ -149,9 +149,23 @@ class Deck(db.Model):
     game_registrations = db.relationship('GameRegistration', backref='deck', lazy='dynamic', cascade="all, delete-orphan")
     def __repr__(self): return f'<Deck {self.name} ({self.commander}) by User {self.user_id}>'
 
-# Renamed GameNight to Game
 class Game(db.Model):
-    __tablename__ = 'games' # Renamed table
+    """A game event that represents a Magic: The Gathering multiplayer session.
+    
+    Lifecycle:
+    1. Created with UPCOMING status
+    2. Players register their decks (and optionally specific versions)
+    3. Game is played
+    4. Results submitted - creates associated Match record, status remains UPCOMING
+    5. Results approved -> status changes to COMPLETED
+       or
+       Game cancelled -> status changes to CANCELLED
+    
+    The Match model represents the results and approval phase of a game's lifecycle.
+    While conceptually part of the same entity, it's currently kept separate for
+    data organization. Future refactoring may merge these models.
+    """
+    __tablename__ = 'games'
     id = db.Column(db.Integer, primary_key=True)
     game_date = db.Column(db.Date, nullable=False, default=date.today, index=True)
     status = db.Column(Enum(GameStatus), nullable=False, default=GameStatus.UPCOMING, index=True)
@@ -196,8 +210,19 @@ class GameRegistration(db.Model):
 
     def __repr__(self): return f'<GameRegistration user={self.user_id} deck={self.deck_id} game={self.game_id}>'
 
-# Modified Match Model
 class Match(db.Model):
+    """Represents the results and approval phase of a game.
+    
+    This model captures:
+    1. Player placements and deck choices
+    2. Game timing (start/end)
+    3. Game notes (interactions, rules discussions, summary)
+    4. Approval workflow
+    
+    While conceptually part of a Game's lifecycle, this data is currently
+    stored separately. A Match is created when game results are submitted,
+    and its status ('pending'/'approved') influences the parent Game's status.
+    """
     __tablename__ = 'matches'
     id = db.Column(db.Integer, primary_key=True)
     game_id = db.Column(db.Integer, db.ForeignKey('games.id', ondelete='SET NULL'), nullable=True, index=True) # Renamed foreign key column and target table
