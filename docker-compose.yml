@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: magmon_db_dev
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-magmon_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-magmon_password}
+      POSTGRES_DB: ${POSTGRES_DB:-magmon_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - magmon_network # Add network
+
+  backend:
+    build: ./backend
+    container_name: magmon_backend_dev
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env # Load backend specific env vars (SECRET_KEY)
+    environment:
+      # Override DATABASE_URL to point to the db service
+      DATABASE_URL: postgresql://${POSTGRES_USER:-magmon_user}:${POSTGRES_PASSWORD:-magmon_password}@db:5432/${POSTGRES_DB:-magmon_dev}
+      FLASK_APP: wsgi.py
+      FLASK_DEBUG: 1 # Enable debug mode for development
+      # Add any other necessary backend env vars here
+    ports:
+      - "5004:5004"
+    volumes:
+      - ./backend:/app # Mount host code into container for live reload
+      # Optional: Mount uploads if they should persist outside container volume
+      # - ./backend/app/static/uploads:/app/app/static/uploads
+    depends_on:
+      - db
+    networks:
+      - magmon_network # Add network
+
+  frontend:
+    build: ./frontend
+    container_name: magmon_frontend_dev
+    restart: unless-stopped
+    ports:
+      - "5173:5173" # Default Vite port
+    volumes:
+      - ./frontend:/app # Mount host code into container
+      - /app/node_modules # Prevent host node_modules from overwriting container's
+    environment:
+      NODE_ENV: development
+      # Set the base URL for the frontend to find the backend API via the host mapping
+      VITE_API_BASE_URL: http://localhost:5004/api
+    depends_on:
+      - backend # Optional, ensures backend starts first
+    networks:
+      - magmon_network # Add network
+
+volumes:
+  postgres_data:
+
+networks: # Define the network
+  magmon_network:
+    driver: bridge
