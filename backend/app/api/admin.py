@@ -1,32 +1,13 @@
 from datetime import datetime, timedelta
-import secrets
-import string
 from flask import jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
-from functools import wraps
+# Removed functools, secrets, string imports as they are now in utils.auth
 from .. import db
 from ..models import User, Game, AdminAuditLog, AdminActionType
 from . import bp
+from .utils.auth import admin_required, generate_temp_password # Import from utils
 
-def admin_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)
-        if not user or not user.is_admin:
-            return jsonify({'error': 'Admin access required'}), 403
-        return f(*args, **kwargs)
-    return decorated_function
-
-def generate_temp_password(length=12):
-    """Generate a secure temporary password"""
-    alphabet = string.ascii_letters + string.digits
-    while True:
-        password = ''.join(secrets.choice(alphabet) for _ in range(length))
-        # Ensure password contains at least one number and one letter
-        if any(c.isdigit() for c in password) and any(c.isalpha() for c in password):
-            return password
-
+# Removed original definitions of admin_required and generate_temp_password
 @bp.route('/admin/check', methods=['GET'])
 @jwt_required()
 def check_admin():
