@@ -7,7 +7,7 @@ from flask_cors import CORS
 from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity # Import JWTManager and decorators/functions
 from flask import jsonify # Import jsonify for error responses
 
-from config import config_by_name
+from .config import config_by_name # Use relative import now that config is in the app package
 
 # Moved User import into user_lookup_callback to avoid circular import
 
