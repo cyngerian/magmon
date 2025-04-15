@@ -506,6 +506,323 @@ def unregister_from_game(game_id):
         current_app.logger.error(f"Error unregistering user {user_id} from game {game_id}: {e}")
         return jsonify({"error": "Unregistration failed"}), 500
 
+# ================== Game Results Routes ==================
+
+@bp.route('/matches', methods=['POST'])
+@jwt_required()
+def submit_match():
+    """Submit results for a completed game.
+    
+    This represents the completion phase of a game's lifecycle:
+    1. Validates game exists and is in UPCOMING status
+    2. Validates all registered players have placements
+    3. Creates a Match record to store results
+    4. Updates game status to COMPLETED (pending approval)
+    
+    The match will be in 'pending' status until approved by another user,
+    at which point the game's COMPLETED status becomes final.
+    """
+    data = request.get_json()
+    if not data: return jsonify({"error": "No input data provided"}), 400
+    current_user_id = get_jwt_identity() # Get submitter from token
+    required_fields = ['game_id', 'placements'] # submitted_by_id comes from token
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": "Missing required fields (game_id, placements)"}), 400
+
+    # Use validation helpers
+    game = validate_game_exists(data['game_id'])
+    if error := validate_game_status(game, GameStatus.UPCOMING):
+        return jsonify(error[0]), error[1]
+    if error := validate_game_registrations(game, required_count=2):
+        return jsonify(error[0]), error[1]
+
+    placements_data = data.get('placements')
+    if not isinstance(placements_data, list) or len(placements_data) < 2: return jsonify({"error": "'placements' must be a list with at least 2 participants"}), 400
+    player_count = len(placements_data)
+
+    submitter = User.query.get(current_user_id) # Get submitter from token
+    if not submitter: return jsonify({"error": "Submitter user (from token) not found"}), 404 # Should not happen
+
+    registered_players = {reg.user_id: reg.deck_id for reg in GameRegistration.query.filter_by(game_id=game.id).all()}
+    player_ids_in_placements = set()
+    placements_dict = {}
+    for placement_info in placements_data:
+        if not isinstance(placement_info, dict) or 'user_id' not in placement_info or 'placement' not in placement_info: return jsonify({"error": "Invalid placement entry format"}), 400
+        user_id = placement_info['user_id']; placement = placement_info['placement']
+        if not isinstance(placement, int) or placement < 1 or placement > player_count: return jsonify({"error": f"Invalid placement value {placement} for user {user_id}"}), 400
+        if user_id in player_ids_in_placements: return jsonify({"error": f"Duplicate user ID {user_id} in placements"}), 400
+        if placement in placements_dict.values(): return jsonify({"error": f"Duplicate placement value {placement}"}), 400
+        if user_id not in registered_players: return jsonify({"error": f"User ID {user_id} was not registered for this game."}), 400
+        player_ids_in_placements.add(user_id); placements_dict[user_id] = placement
+
+    if len(registered_players) != len(player_ids_in_placements): return jsonify({"error": "Placement data does not match registered players."}), 400
+    if set(registered_players.keys()) != player_ids_in_placements: return jsonify({"error": "Placement user IDs do not match registered IDs."}), 400
+
+    start_time = None; end_time = None
+    try:
+        if data.get('start_time'): start_time = datetime.fromisoformat(data['start_time'].replace(" ", "T"))
+        if data.get('end_time'): end_time = datetime.fromisoformat(data['end_time'].replace(" ", "T"))
+    except ValueError: return jsonify({"error": "Invalid datetime format. Use YYYY-MM-DDTHH:MM or YYYY-MM-DD HH:MM"}), 400
+
+    new_match = Match(
+        game_id=game.id, submitted_by_id=current_user_id, # Use submitter from token
+        player_count=player_count, start_time=start_time, end_time=end_time, status='pending',
+        notes_big_interaction=data.get('notes_big_interaction'), notes_rules_discussion=data.get('notes_rules_discussion'), notes_end_summary=data.get('notes_end_summary')
+    )
+    try:
+        db.session.add(new_match); db.session.flush()
+        
+        # Get all registrations with deck versions
+        registrations = GameRegistration.query.filter_by(game_id=game.id).all()
+        reg_dict = {reg.user_id: reg for reg in registrations}
+        
+        for user_id, placement in placements_dict.items():
+            deck_id = registered_players[user_id]
+            
+            # Get the deck version ID from the registration
+            deck_version_id = None
+            if user_id in reg_dict and reg_dict[user_id].deck_version_id:
+                deck_version_id = reg_dict[user_id].deck_version_id
+            
+            match_player_entry = MatchPlayer(
+                match_id=new_match.id,
+                user_id=user_id,
+                deck_id=deck_id,
+                deck_version_id=deck_version_id,
+                placement=placement
+            )
+            db.session.add(match_player_entry)
+
+        game.status = GameStatus.COMPLETED
+        db.session.add(game)
+
+        db.session.commit()
+        # Use consistent terminology in response message
+        return jsonify({"message": "Game results submitted successfully", "match_id": new_match.id}), 201
+    except Exception as e:
+        # Use consistent terminology in error message and log
+        db.session.rollback(); current_app.logger.error(f"Error submitting game results: {e}"); return jsonify({"error": "Game result submission failed"}), 500
+
+# --- Match Approval Routes ---
+
+@bp.route('/matches', methods=['GET'])
+def get_matches():
+    """Get a list of completed games with their results.
+    
+    This endpoint returns games that have had results submitted,
+    optionally filtered by approval status:
+    - pending: Results submitted but not yet approved
+    - approved: Results approved and final
+    
+    Each result includes:
+    - Game details (date, status)
+    - Player count
+    - Submission details (who, when)
+    - Approval details (who, when) if approved
+    """
+    status_filter = request.args.get('status')
+    query = Match.query
+    if status_filter:
+        query = query.filter_by(status=status_filter)
+
+    try:
+        matches = query.order_by(Match.created_at.desc()).all()
+        match_list = [{
+            "match_id": m.id,
+            "game_id": m.game_id,
+            "game_date": m.game.game_date.isoformat() if m.game else None,
+            "status": m.status,
+            "player_count": m.player_count,
+            "submitted_by": m.submitter.username,
+            "created_at": m.created_at.isoformat(),
+            "approved_by": m.approver.username if m.approved_by_id else None, # Include approver username
+            "approved_at": m.approved_at.isoformat() if m.approved_at else None
+        } for m in matches]
+        return jsonify(match_list), 200
+    except Exception as e:
+        # Use consistent terminology in error message and log
+        current_app.logger.error(f"Error fetching game results: {e}")
+        return jsonify({"error": "Failed to fetch game results"}), 500
+
+
+@bp.route('/matches/<int:match_id>/approve', methods=['PATCH'])
+@jwt_required()
+def approve_match(match_id):
+    """Approve game results, finalizing the game's completion.
+    
+    This represents the final phase of a game's lifecycle:
+    1. Validates match exists and is in pending status
+    2. Validates approver is not the same as submitter
+    3. Updates match status to approved
+    4. Game status remains COMPLETED
+    
+    Once approved, the game results are final and cannot be changed.
+    """
+    match = Match.query.get_or_404(match_id)
+    if error := validate_match_status(match, 'pending'):
+        return jsonify(error[0]), error[1]
+
+    approver_id = get_jwt_identity() # Approver is the logged-in user
+    data = request.get_json() # Still need data for notes
+    approval_notes = data.get('approval_notes') if data else None
+
+    # No need for approver_id in payload anymore
+    approver = User.query.get(approver_id)
+    if not approver: return jsonify({"error": "Approver user (from token) not found"}), 404 # Should not happen
+
+    # Prevent self-approval
+    if match.submitted_by_id == approver_id:
+        return jsonify({"error": "Cannot approve your own submitted match"}), 403
+
+    match.status = 'approved'
+    match.approved_by_id = approver_id
+    match.approved_at = datetime.utcnow()
+    match.approval_notes = approval_notes # Save notes
+
+    # TODO: Calculate season number here based on approved matches?
+
+    try:
+        db.session.add(match)
+        db.session.commit()
+        # Use consistent terminology in response message
+        return jsonify({"message": "Game results approved successfully", "match_id": match.id, "status": match.status}), 200
+    except Exception as e:
+        db.session.rollback()
+        # Use consistent terminology in error message and log
+        current_app.logger.error(f"Error approving game results: {e}")
+        return jsonify({"error": "Game result approval failed"}), 500
+
+@bp.route('/matches/<int:match_id>/reject', methods=['PATCH'])
+@jwt_required()
+def reject_match(match_id):
+    """Reject game results, allowing resubmission.
+    
+    This represents a reset in the game's lifecycle:
+    1. Validates match exists and is in pending status
+    2. Clears approval-related fields
+    3. Updates match status back to pending
+    4. Resets game status to UPCOMING
+    
+    After rejection, new results can be submitted for the game.
+    """
+    match = Match.query.get_or_404(match_id)
+    if error := validate_match_status(match, 'pending'):
+        return jsonify(error[0]), error[1]
+
+    rejector_id = get_jwt_identity() # Rejector is the logged-in user
+    data = request.get_json() # Still need data for notes
+    approval_notes = data.get('approval_notes') if data else None
+
+    # No need for rejected_by_id in payload
+    rejector = User.query.get(rejector_id)
+    if not rejector: return jsonify({"error": "Rejector user (from token) not found"}), 404 # Should not happen
+
+    # Prevent self-rejection? Usually not necessary but possible.
+    # if match.submitted_by_id == rejector_id:
+    #     return jsonify({"error": "Cannot reject your own submitted match"}), 403
+
+    # Option 1: Delete the match record entirely upon rejection
+    # Option 2: Set status to 'rejected' (requires adding 'rejected' to Match status options)
+    # Option 3: Keep status 'pending' but clear placements/add notes, requiring re-submission?
+    # Let's go with Option 1 for simplicity now: Delete the match and its players.
+    # Alternatively, just update notes and keep pending? Let's update notes and keep pending.
+
+    match.status = 'pending' # Keep as pending
+    match.approved_by_id = None # Clear any potential previous approver
+    match.approved_at = None
+    match.approval_notes = f"Rejected by {rejector.username}: {approval_notes or 'No reason provided.'}" # Use username
+
+    # Also need to potentially reset the Game status if it was set to Completed
+    if match.game:
+        match.game.status = GameStatus.UPCOMING # Or determine appropriate status
+        db.session.add(match.game)
+
+    try:
+        db.session.add(match)
+        db.session.commit()
+        # Use consistent terminology in response message
+        return jsonify({"message": "Game result rejection noted. Kept as pending.", "match_id": match.id}), 200
+    except Exception as e:
+        db.session.rollback()
+        # Use consistent terminology in error message and log
+        current_app.logger.error(f"Error rejecting game results: {e}")
+        return jsonify({"error": "Game result rejection failed"}), 500
+
+@bp.route('/matches/<int:match_id>', methods=['GET'])
+def get_match_details(match_id):
+    """Get detailed results for a completed game.
+    
+    Returns comprehensive information about a game's results:
+    1. Game metadata (date, status)
+    2. Player results (placements, decks used)
+    3. Game notes (interactions, rules discussions)
+    4. Submission/approval details
+    
+    Uses eager loading to efficiently fetch all related data
+    in a single query.
+    """
+    # Eager load related objects to prevent N+1 queries
+    match = Match.query.options(
+        db.joinedload(Match.submitter), # Eager load submitter
+        db.joinedload(Match.approver),  # Eager load approver
+        db.joinedload(Match.game)       # Eager load game
+    ).get_or_404(match_id)
+
+    players = MatchPlayer.query.options(
+        db.joinedload(MatchPlayer.user), # Eager load user
+        db.joinedload(MatchPlayer.deck)  # Eager load deck
+    ).filter_by(match_id=match_id).order_by(MatchPlayer.placement).all()
+
+    # Build player details safely, checking for None relationships
+    player_details = []
+    for p in players:
+        player_info = {
+            "user_id": p.user_id,
+            "username": p.user.username if p.user else "Unknown User",
+            "deck_id": p.deck_id,
+            "deck_name": p.deck.name if p.deck else "Unknown Deck",
+            "commander": p.deck.commander if p.deck else "Unknown",
+            "placement": p.placement,
+            "deck_version_id": p.deck_version_id
+        }
+        
+        # Add version information if available
+        if p.deck_version_id:
+            version = DeckVersion.query.get(p.deck_version_id)
+            if version:
+                player_info["version_number"] = version.version_number
+                player_info["version_notes"] = version.notes
+        
+        player_details.append(player_info)
+
+    match_data = {
+        "match_id": match.id,
+        "game_id": match.game_id,
+        # Safely access game date
+        "game_date": match.game.game_date.isoformat() if match.game and match.game.game_date else None,
+        "status": match.status,
+        "player_count": match.player_count,
+        "submitted_by_id": match.submitted_by_id,
+        # Safely access submitter username
+        "submitted_by_username": match.submitter.username if match.submitter else None,
+        "created_at": match.created_at.isoformat(), # created_at is required
+        "approved_by_id": match.approved_by_id,
+        # Safely access approver username
+        "approved_by_username": match.approver.username if match.approver else None,
+        # Safely call isoformat on nullable datetime
+        "approved_at": match.approved_at.isoformat() if match.approved_at else None,
+        "approval_notes": match.approval_notes,
+        # Safely call isoformat on nullable datetime
+        "start_time": match.start_time.isoformat() if match.start_time else None,
+        # Safely call isoformat on nullable datetime
+        "end_time": match.end_time.isoformat() if match.end_time else None,
+        "notes_big_interaction": match.notes_big_interaction,
+        "notes_rules_discussion": match.notes_rules_discussion,
+        "notes_end_summary": match.notes_end_summary,
+        "players": player_details
+    }
+    return jsonify(match_data), 200
+
 # ================== User Routes ==================
 
 @bp.route('/users', methods=['GET'])
@@ -710,7 +1027,6 @@ def upload_avatar():
 # Note: Serving static files like avatars is typically handled by Flask's built-in
 # static file serving (if app.static_folder is set correctly, usually './static')
 # or by a web server like Nginx in production. No separate route needed here usually.
-
 
 # ================== Game Results Routes ==================
 
