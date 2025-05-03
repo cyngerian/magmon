@@ -165,7 +165,7 @@ jobs:
           echo "Timeout reached after $MAX_WAIT seconds. Services did not become healthy."
           exit 1
 
-- name: Run database migrations
+      - name: Run database migrations
         run: docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend flask db upgrade
       - name: Run backend integration tests
         run: docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend pytest backend/tests/integration -m "integration"
