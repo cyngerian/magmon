@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
-import apiClient from '../apiClient';
 import { getDeckDetails, getDeckVersions, createDeckVersion } from '../apiClient';
 
 // --- Interfaces ---
@@ -33,7 +32,7 @@ interface User {
 
 const DeckVersionsPage = ({ loggedInUser }: { loggedInUser: User | null }) => {
   const { deckId } = useParams<{ deckId: string }>();
-  const navigate = useNavigate();
+  useNavigate(); // Call useNavigate to satisfy hook rules, but don't assign
   const [deck, setDeck] = useState<Deck | null>(null);
   const [versions, setVersions] = useState<DeckVersion[]>([]);
   const [loading, setLoading] = useState(true);

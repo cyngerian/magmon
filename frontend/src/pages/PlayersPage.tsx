@@ -1,5 +1,5 @@
 // frontend/src/pages/PlayersPage.tsx
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios'; // Keep for type guard
 import apiClient from '../apiClient'; // Use configured apiClient (Retry 2)
 // Removed apiClient import
@@ -18,8 +18,6 @@ interface UserListItem {
 
 // --- API Base URL ---
 // TODO: Centralize API_BASE_URL
-const API_BASE_URL = 'http://127.0.0.1:5004/api';
-
 function PlayersPage() {
     const [players, setPlayers] = useState<UserListItem[]>([]);
     const [isLoading, setIsLoading] = useState(true);

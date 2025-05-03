@@ -7,17 +7,17 @@ from sqlalchemy.orm import aliased, joinedload
 from sqlalchemy import func, select
 from datetime import date, datetime # Added datetime
 
-# Adjust relative imports for models and db
-from .... import db
-from ....models import User, Deck, Match, MatchPlayer, Game, GameStatus, GameRegistration, DeckVersion # Navigate up three levels
+from backend.app import db
+from backend.app.models import User, Deck, Match, MatchPlayer, Game, GameStatus, GameRegistration, DeckVersion
+from backend.app.api import bp
 
-# Adjust relative import for the blueprint
-from .. import bp
-
-# Import validation helpers from the main routes file for now
-# TODO: Move these helpers to a utils directory later
-# Assuming routes.py is in the parent directory (api) for now
-from ..routes import validate_game_exists, validate_game_status, validate_game_registrations, validate_match_status
+# Import validation helpers from utils
+from ..utils.game_validation import (
+    validate_game_exists,
+    validate_game_status,
+    validate_game_registrations,
+    validate_match_status
+)
 
 # ================== Game Routes ==================
 

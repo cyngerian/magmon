@@ -22,8 +22,6 @@ interface ProfileUpdateResponse {
 
 // --- API Base URL ---
 // TODO: Centralize API_BASE_URL
-const API_BASE_URL = 'http://127.0.0.1:5004/api';
-
 function ProfilePage({ loggedInUser }: { loggedInUser: User | null }) {
     const [profile, setProfile] = useState<UserProfile | null>(null);
     const [isLoading, setIsLoading] = useState(true);

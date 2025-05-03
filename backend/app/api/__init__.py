@@ -3,11 +3,9 @@ from flask import Blueprint
 # Create a Blueprint instance for API routes
 bp = Blueprint('api', __name__)
 
-# Import routes after blueprint creation to avoid circular imports
-# Import specific route modules AFTER blueprint creation
-# Keep importing routes for now as it still contains user/deck/profile routes
-from . import routes, auth, admin
-from .routes import games # Import the new games routes module
+# Import route modules after blueprint creation to avoid circular imports
+from . import auth, admin
+from .routes import games, decks, users, profile
 from .utils import error_handlers # Import the error handlers module
 
 # Register common error handlers for this blueprint

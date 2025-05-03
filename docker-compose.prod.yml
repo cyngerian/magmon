@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: magmon_db_prod # Use distinct name for prod
+    restart: always
+    environment:
+      # These should be set securely in the production environment, not hardcoded
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data # Use distinct volume for prod
+    networks:
+      - magmon_network
+
+  backend:
+    # Replace with your actual production image registry/name/tag
+    image: your-registry/magmon-backend:latest
+    container_name: magmon_backend_prod
+    restart: unless-stopped
+    environment:
+      # Production settings
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      FLASK_APP: wsgi:app # Point to wsgi.py:app object
+      FLASK_DEBUG: 0 # Ensure debug mode is off
+      # Add any other necessary production backend env vars here
+    ports:
+      - "5004:5004" # Expose backend port (can be mapped differently by ingress/load balancer)
+    depends_on:
+      - db
+    networks:
+      - magmon_network
+    # No source code volume mount in production
+    # Command uses the default CMD from the Dockerfile (Gunicorn)
+
+  frontend:
+    # Replace with your actual production image registry/name/tag
+    image: your-registry/magmon-frontend:latest
+    container_name: magmon_frontend_prod
+    restart: unless-stopped
+    ports:
+      - "80:80" # Expose standard HTTP port (assuming Nginx image)
+    environment:
+      NODE_ENV: production
+      # Nginx container will handle proxying to backend, no VITE_API_BASE_URL needed here
+    depends_on:
+      - backend
+    networks:
+      - magmon_network
+    # No source code volume mount in production
+
+volumes:
+  postgres_data_prod: # Define the production volume
+
+networks:
+  magmon_network:
+    driver: bridge

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import App from './App'; // Assuming App component exists and is default export
 import { MemoryRouter } from 'react-router-dom'; // Use MemoryRouter for testing routes

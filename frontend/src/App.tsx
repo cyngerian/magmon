@@ -28,8 +28,6 @@ interface User {
 }
 
 // --- API Base URL ---
-const API_BASE_URL = 'http://127.0.0.1:5004/api';
-
 // --- Authentication Hook ---
 // --- Authentication Hook --- (Retry)
 // TODO: Consider storing token in memory or HttpOnly cookie for better security

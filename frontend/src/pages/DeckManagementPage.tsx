@@ -10,6 +10,13 @@ interface Deck {
 }
 interface User { id: number; username: string; email: string; }
 
+interface DeckVersion {
+  id: number;
+  version_number: number;
+  created_at: string;
+  notes: string | null; // Adjusted based on usage in the file (line 140 check)
+  is_current: boolean;
+}
 // Interface for deck game history items
 interface DeckGameHistoryItem {
     game_id: number;
@@ -31,19 +38,19 @@ interface DeckVersionDetail extends DeckVersionSummary {
 }
 
 // --- API Base URL ---
-const API_BASE_URL = 'http://127.0.0.1:5004/api';
-
 function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
   const [deckName, setDeckName] = useState('');
   const [deckCommander, setDeckCommander] = useState('');
   const [deckColors, setDeckColors] = useState('');
   const [decklistText, setDecklistText] = useState('');
-  const [deckMessage, setDeckMessage] = useState('');
+  const [createStatusMessage, setCreateStatusMessage] = useState(''); // For create form status
+  const [editSuccessMessage, setEditSuccessMessage] = useState(''); // For edit success outside modal
   const [userDecks, setUserDecks] = useState<Deck[]>([]);
   const [selectedDeck, setSelectedDeck] = useState<Deck | null>(null);
   const [deckHistory, setDeckHistory] = useState<DeckGameHistoryItem[]>([]); // State for history
   const [isLoading, setIsLoading] = useState(false); // Loading for deck list
   const [isLoadingDetails, setIsLoadingDetails] = useState(false); // Loading for details/history
+  const [loadingDeckId, setLoadingDeckId] = useState<number | null>(null); // Track which deck's details are loading
   const [detailMessage, setDetailMessage] = useState(''); // Message for detail view
 
   // State for version selection within the detail view
@@ -62,11 +69,11 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
   const location = useLocation(); // For reading navigation state
 
   const fetchUserDecks = async (userId: number) => {
-    setIsLoading(true); setDeckMessage('');
+    setIsLoading(true); // Messages are cleared by the functions that set them or trigger actions
     try {
       const response = await apiClient.get<Deck[]>(`/users/${userId}/decks`); // Use apiClient, relative URL (Retry 2)
       setUserDecks(response.data);
-    } catch (error) { console.error("Error fetching decks:", error); setDeckMessage("Failed to load decks."); }
+    } catch (error) { console.error("Error fetching decks:", error); setCreateStatusMessage("Failed to load decks."); } // Use createStatusMessage for general load errors too? Or add another state? For now, using createStatus.
     finally { setIsLoading(false); }
   };
 
@@ -96,27 +103,44 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
 
 
   const handleCreateDeck = async (e: React.FormEvent) => {
-    e.preventDefault(); setDeckMessage('');
+    e.preventDefault(); setCreateStatusMessage(''); setEditSuccessMessage(''); // Clear messages
     if (!loggedInUser) return;
-    if (!deckColors) { setDeckMessage("Please select at least one color (or Colorless)."); return; }
+    if (!deckColors) { setCreateStatusMessage("Please select at least one color (or Colorless)."); return; }
     try {
       await apiClient.post(`/decks`, { name: deckName, commander: deckCommander, colors: deckColors, decklist_text: decklistText }); // Use apiClient, relative URL, remove user_id (Retry 2)
-      setDeckMessage('Deck created successfully!');
-      setDeckName(''); setDeckCommander(''); setDeckColors(''); setDecklistText('');
-      fetchUserDecks(loggedInUser.id);
-    } catch (error) { setDeckMessage(axios.isAxiosError(error) && error.response ? `Deck creation failed: ${error.response.data.error || error.message}` : `Deck creation failed: ${(error as Error).message}`); } // Use axios.isAxiosError
+      console.log('[DEBUG] Setting create success message'); // DEBUG LOG
+      setCreateStatusMessage('Deck created successfully!');
+      // Add a microtask delay to allow React to render the message before refetching/clearing
+      console.log('[DEBUG] Waiting for microtask before form clear/refetch'); // DEBUG LOG
+      await new Promise(r => setTimeout(r, 0));
+      console.log('[DEBUG] Microtask finished, refetching/clearing form'); // DEBUG LOG
+      fetchUserDecks(loggedInUser.id); // Fetch decks first
+      setDeckName(''); setDeckCommander(''); setDeckColors(''); setDecklistText(''); // Then clear form
+    } catch (error) {
+        let errorMsg = "Deck creation failed: An unknown error occurred";
+        if (error instanceof Error) {
+            errorMsg = `Deck creation failed: ${error.message}`;
+        }
+        // Attempt to get more specific error from Axios response if available
+        if (axios.isAxiosError(error) && error.response?.data?.error) {
+             errorMsg = `Deck creation failed: ${error.response.data.error}`;
+        }
+        console.log('[DEBUG] Setting create error message:', errorMsg); // DEBUG LOG
+        setCreateStatusMessage(errorMsg);
+    }
   };
 
   // Modified viewDeckDetails to accept an optional targetVersionId
   const viewDeckDetails = async (deckId: number, targetVersionId?: number) => {
-      setDeckMessage(''); // Clear main message
+      // setCreateStatusMessage(''); setEditSuccessMessage(''); // Clear main messages - REMOVED, let calling context manage
       setDetailMessage(''); // Clear detail message
+      setLoadingDeckId(deckId); // Set loading ID *before* clearing selectedDeck
       setSelectedDeck(null); // Reset selected deck
       setDeckHistory([]); // Reset history
       setDetailVersions([]); // Reset versions list
       setSelectedDetailVersionId(null); // Reset selected version ID
       setSelectedDetailVersion(null); // Reset selected version details
-      setIsLoadingDetails(true); // Start loading details
+      setIsLoadingDetails(true); // Start loading details (spinner appears based on loadingDeckId)
 
       console.log("Fetching details, versions, and history for deck ID:", deckId);
 
@@ -137,7 +161,7 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
           // Determine which version to show initially
           let initialVersionId = targetVersionId; // Prioritize targetVersionId from state/link
           // Validate targetVersionId exists in the fetched versions
-          if (!initialVersionId || !versionsResponse.some(v => v.id === initialVersionId)) {
+          if (!initialVersionId || !versionsResponse.some((v: DeckVersion) => v.id === initialVersionId)) {
                 console.log("Target version ID not found or not provided, using default logic.");
                 initialVersionId = baseDetailsResponse.current_version_id; // Fallback to current
                 if (!initialVersionId && versionsResponse.length > 0) {
@@ -162,9 +186,17 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
 
       } catch (error) {
           console.error("Error fetching deck details/versions/history:", error);
-          setDetailMessage(axios.isAxiosError(error) && error.response ? `Failed to load deck data: ${error.response.data.error || error.message}` : `Failed to load deck data: ${(error as Error).message}`);
+          let errorMsg = "Failed to load deck data: An unknown error occurred";
+          if (error instanceof Error) {
+              errorMsg = `Failed to load deck data: ${error.message}`;
+          }
+          if (axios.isAxiosError(error) && error.response?.data?.error) {
+               errorMsg = `Failed to load deck data: ${error.response.data.error}`;
+          }
+          setDetailMessage(errorMsg);
       } finally {
-          setIsLoadingDetails(false); // Stop loading details
+          setIsLoadingDetails(false); // Stop loading details state
+          setLoadingDeckId(null); // Clear loading ID
       }
   };
 
@@ -183,7 +215,14 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
           setSelectedDetailVersion(versionDetails);
       } catch (error) {
           console.error(`Error fetching details for version ${newVersionId}:`, error);
-          setDetailMessage(axios.isAxiosError(error) && error.response ? `Failed to load version details: ${error.response.data.error || error.message}` : `Failed to load version details: ${(error as Error).message}`);
+          let errorMsg = "Failed to load version details: An unknown error occurred";
+           if (error instanceof Error) {
+               errorMsg = `Failed to load version details: ${error.message}`;
+           }
+           if (axios.isAxiosError(error) && error.response?.data?.error) {
+                errorMsg = `Failed to load version details: ${error.response.data.error}`;
+           }
+          setDetailMessage(errorMsg);
       } finally {
           setIsLoadingDetails(false);
       }
@@ -203,7 +242,14 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
           setIsEditModalOpen(true); // Open modal only after fetching data
       } catch (error) {
           console.error("Error fetching deck details for edit:", error);
-          setDeckMessage("Failed to load deck data for editing."); // Show error on main page for now
+          let errorMsg = "Failed to load deck data for editing: An unknown error occurred.";
+          if (error instanceof Error) {
+              errorMsg = `Failed to load deck data for editing: ${error.message}`;
+          }
+          if (axios.isAxiosError(error) && error.response?.data?.error) {
+               errorMsg = `Failed to load deck data for editing: ${error.response.data.error}`;
+          }
+          setEditError(errorMsg); // Show error in modal
       }
   };
 
@@ -225,9 +271,12 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
           console.log("New version created:", response); // Log success
           setIsEditModalOpen(false);
           setEditingDeck(null);
-          // Optionally show a success message or refresh the deck list/details
-          setDeckMessage(`Successfully created new version for deck: ${editingDeck.name}`);
+          // Show success message outside the modal
+          console.log('[DEBUG] Setting edit success message'); // DEBUG LOG
+          setEditSuccessMessage(`Successfully created new version for deck: ${editingDeck.name}`);
+          setCreateStatusMessage(''); // Clear create status if any
           // Re-fetch decks to show updated last_updated timestamp? Or handle locally.
+          console.log('[DEBUG] Triggering deck refetch/detail refresh after edit success'); // DEBUG LOG
           if (loggedInUser) fetchUserDecks(loggedInUser.id);
           // If the edited deck was being viewed, refresh its details?
           if (selectedDeck?.id === editingDeck.id) {
@@ -235,11 +284,20 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
           }
 
       } catch (error) {
-          console.error("Error creating new version:", error);
-          setEditError(axios.isAxiosError(error) && error.response ? `Failed to save: ${error.response.data.error || error.message}` : `Failed to save: ${(error as Error).message}`);
-      } finally {
-          setIsSaving(false);
-      }
+            console.error("Error creating new version:", error);
+            let errorMsg = "Failed to save: An unknown error occurred.";
+            if (error instanceof Error) {
+                errorMsg = `Failed to save: ${error.message}`;
+            }
+            // Attempt to get more specific error from Axios response if available
+            if (axios.isAxiosError(error) && error.response?.data?.error) {
+                 errorMsg = `Failed to save: ${error.response.data.error}`;
+            }
+            console.log('[DEBUG] Setting edit error message:', errorMsg); // DEBUG LOG
+            setEditError(errorMsg); // Set the error state for the modal
+        } finally {
+            setIsSaving(false);
+        }
   };
 
   if (!loggedInUser) { return <p>Please log in to manage decks.</p>; }
@@ -262,45 +320,44 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
               <label htmlFor="deckCommander">Commander</label>
               <input type="text" id="deckCommander" value={deckCommander} onChange={(e) => setDeckCommander(e.target.value)} required />
             </div>
-            {/* Color Checkboxes - Use Grid for alignment */}
-            <div className="form-group">
-                 <label>Colors</label>
-                 <div style={{ display: 'inline-block', verticalAlign: 'middle', width: 'calc(100% - 180px - 1.2rem - 0.5rem)', marginLeft: '0' }}>
-                    {/* Use Pico grid inside the container */}
-                    <div className="grid" style={{ gridTemplateColumns: 'repeat(3, auto)', gap: '0.5rem 1rem', justifyContent: 'start', margin: 0, padding: 0 }}>
-                        {['W', 'U', 'B', 'R', 'G', 'C'].map(color => (
-                            <label key={color} htmlFor={`color-${color}`} style={{ width: 'auto', margin: 0, padding: 0, textAlign: 'left' }}>
-                                <input
-                                    type="checkbox"
-                                    id={`color-${color}`}
-                                    name="colors"
-                                    value={color}
-                                    checked={deckColors.includes(color)}
-                                    // Removed inline style from checkbox
-                                    onChange={(e) => {
-                                        const { value, checked } = e.target;
-                                        setDeckColors(prev =>
-                                            checked
-                                                ? [...prev.split(''), value].sort((a, b) => "WUBRGC".indexOf(a) - "WUBRGC".indexOf(b)).join('')
-                                                : prev.split('').filter(c => c !== value).join('')
-                                        );
-                                    }}
-                                /> {color}
-                            </label>
-                        ))}
-                    </div>
+            {/* Color Checkboxes - Use fieldset/legend for accessibility */}
+            <fieldset className="form-group">
+                 <legend>Colors</legend>
+                 {/* Use Pico grid inside the fieldset */}
+                 <div className="grid" style={{ gridTemplateColumns: 'repeat(3, auto)', gap: '0.5rem 1rem', justifyContent: 'start', margin: 0, padding: 0 }}>
+                     {['W', 'U', 'B', 'R', 'G', 'C'].map(color => (
+                         <label key={color} htmlFor={`color-${color}`} style={{ width: 'auto', margin: 0, padding: 0, textAlign: 'left' }}>
+                             <input
+                                 type="checkbox"
+                                 id={`color-${color}`}
+                                 name="colors"
+                                 value={color}
+                                 checked={deckColors.includes(color)}
+                                 onChange={(e) => {
+                                     const { value, checked } = e.target;
+                                     setDeckColors(prev =>
+                                         checked
+                                             ? [...prev.split(''), value].sort((a, b) => "WUBRGC".indexOf(a) - "WUBRGC".indexOf(b)).join('')
+                                             : prev.split('').filter(c => c !== value).join('')
+                                     );
+                                 }}
+                             /> {color}
+                         </label>
+                     ))}
                  </div>
-            </div>
+            </fieldset>
             <div className="form-group">
               <label htmlFor="decklistText">Decklist</label>
               <textarea id="decklistText" value={decklistText} onChange={(e) => setDecklistText(e.target.value)} rows={6} />
             </div>
             <button type="submit">Create Deck</button>
           </form>
-          {deckMessage && <p><small style={{ color: deckMessage.startsWith('Deck creation failed') ? 'var(--pico-color-red-500)' : 'var(--pico-color-green-500)' }}>{deckMessage}</small></p>}
+          {createStatusMessage && <p><small style={{ color: createStatusMessage.startsWith('Deck creation failed') || createStatusMessage.startsWith('Failed to load') ? 'var(--pico-color-red-500)' : 'var(--pico-color-green-500)' }}>{createStatusMessage}</small></p>}
         </article>
         <article>
           <h4>Your Decks</h4>
+          {/* Display edit success message here */}
+          {editSuccessMessage && <p><small style={{ color: 'var(--pico-color-green-500)' }}>{editSuccessMessage}</small></p>}
           {isLoading ? <p aria-busy="true">Loading decks...</p> :
            userDecks.length > 0 ? (
             <table role="grid">
@@ -322,17 +379,17 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
                   <td>
                       <div
                           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', height: '30px', gap: '5px' }} /* Use gap for spacing */
-                          aria-busy={isLoadingDetails && selectedDeck?.id === deck.id} /* Move aria-busy here */
+                          aria-busy={loadingDeckId === deck.id} /* Use loadingDeckId for aria-busy */
                       >
                           {/* Removed problematic console.log */}
-                          {!(isLoadingDetails && selectedDeck?.id === deck.id) && ( /* Conditionally render buttons */
+                          {loadingDeckId !== deck.id && ( /* Conditionally render buttons based on loadingDeckId */
                               <>
-                                  {console.log(`Rendering buttons for deck: ${deck.name}`)} {/* Log button rendering */}
+                                  {/* Removed console.log */}
                                   <button
                                       onClick={() => viewDeckDetails(deck.id)}
                                       className="outline secondary"
                                       style={{ padding: '0.1em 0.5em', fontSize: '0.8em', margin: 0, flexGrow: 1 }} /* Allow button to grow */
-                                      disabled={isLoadingDetails && selectedDeck?.id === deck.id}
+                                      disabled={loadingDeckId === deck.id} // Disable if loading this deck's details
                                   >
                                       View
                                   </button>
@@ -340,7 +397,7 @@ function DeckManagementPage({ loggedInUser }: { loggedInUser: User | null }) {
                                       onClick={() => openEditModal(deck)}
                                       className="outline contrast"
                                       style={{ padding: '0.1em 0.5em', fontSize: '0.8em', margin: 0, flexGrow: 1 }} /* Allow button to grow */
-                                      disabled={isLoadingDetails && selectedDeck?.id === deck.id} // Disable if details are loading for this deck
+                                      disabled={loadingDeckId === deck.id} // Disable if loading this deck's details
                                   >
                                       Edit
                                   </button>

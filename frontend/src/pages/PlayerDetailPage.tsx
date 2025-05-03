@@ -58,8 +58,6 @@ interface DeckVersionDetail extends DeckVersionSummary {
 
 // --- API Base URL ---
 // TODO: Centralize API_BASE_URL
-const API_BASE_URL = 'http://127.0.0.1:5004/api';
-
 function PlayerDetailPage() {
     const { userId } = useParams<{ userId: string }>(); // Get userId from URL
     const [player, setPlayer] = useState<PlayerProfile | null>(null);

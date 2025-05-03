@@ -1,0 +1,298 @@
+# .github/workflows/ci-cd.yml
+# CI/CD Pipeline for MagMon Project
+
+name: MagMon CI/CD
+
+# Triggers for the workflow
+on:
+  push:
+    branches: [ main, develop ] # Adjust branches as needed
+  pull_request:
+    branches: [ main, develop ] # Adjust branches as needed
+  # Allows manual triggering from the GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  lint-and-format:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Match backend Dockerfile
+
+      - name: Install backend dependencies
+        run: pip install flake8 black # Add other linters/formatters if used
+
+      - name: Run backend linters
+        run: |
+          flake8 backend/
+          black --check backend/
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Match frontend Dockerfile
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: ./frontend
+
+      - name: Run frontend linters
+        run: npm run lint
+        working-directory: ./frontend
+
+  backend-unit-tests:
+    name: Backend Unit Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-format # Run after linting
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt pytest # Add other test deps if needed
+
+      - name: Run backend unit tests
+        # Assuming integration tests are marked with 'integration' marker
+        run: pytest backend/tests/ -m "not integration"
+
+  frontend-unit-tests:
+    name: Frontend Unit/Component Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-format # Run after linting
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: ./frontend
+
+      - name: Run frontend tests
+        run: npm test -- --run # Use '--run' for non-watch mode in CI
+        working-directory: ./frontend
+
+  backend-integration-tests:
+    name: Backend Integration Tests
+    runs-on: ubuntu-latest
+    needs: [backend-unit-tests, frontend-unit-tests] # Run after unit tests
+    # Requires Docker and docker-compose
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create .env file for Docker Compose
+        run: |
+          echo "POSTGRES_USER=${{ secrets.POSTGRES_USER }}" > .env
+          echo "POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}" >> .env
+          # POSTGRES_DB_TEST is defined with a default in docker-compose.test.yml and will use the user/password above.
+          echo "SECRET_KEY=${{ secrets.FLASK_SECRET_KEY }}" >> .env
+          echo "Generated .env file for testing (credentials omitted):"
+          cat .env | sed 's/POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=***/' # Print for verification, masking password
+
+      - name: Start services for testing
+        run: docker-compose -f docker-compose.yml -f docker-compose.test.yml up -d db backend
+
+      - name: Wait for services to be healthy
+        # Robust health check for db and backend services
+        run: |
+          #!/bin/bash
+          set -e # Exit immediately if a command exits with a non-zero status.
+
+          MAX_WAIT=60 # Maximum wait time in seconds
+          INTERVAL=5  # Interval between checks in seconds
+          ELAPSED=0
+
+          echo "Waiting for services to become healthy (max ${MAX_WAIT}s)..."
+
+          # Database check command (using default user/db)
+          DB_CMD="docker-compose -f docker-compose.yml -f docker-compose.test.yml exec -T db pg_isready -U magmon_user -d magmon_test -h localhost"
+
+          # Backend check command (using curl to check localhost:5004)
+          BACKEND_CMD="curl -sSf http://localhost:5004/" # Use --fail for HTTP errors
+
+          while [ $ELAPSED -lt $MAX_WAIT ]; do
+            DB_READY=false
+            BACKEND_READY=false
+
+            echo "Checking database..."
+            if $DB_CMD > /dev/null 2>&1; then
+              echo "Database is ready."
+              DB_READY=true
+            else
+              echo "Database not ready yet..."
+            fi
+
+            echo "Checking backend..."
+            # Check backend only if DB is ready (optional optimization)
+            if $DB_READY; then
+              if $BACKEND_CMD > /dev/null 2>&1; then
+                echo "Backend is ready."
+                BACKEND_READY=true
+              else
+                echo "Backend not ready yet..."
+              fi
+            fi
+
+            if $DB_READY && $BACKEND_READY; then
+              echo "All services are healthy!"
+              exit 0
+            fi
+
+            echo "Services not ready. Waiting $INTERVAL seconds..."
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "Timeout reached after $MAX_WAIT seconds. Services did not become healthy."
+          exit 1
+
+- name: Run database migrations
+        run: docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend flask db upgrade
+      - name: Run backend integration tests
+        run: docker-compose -f docker-compose.yml -f docker-compose.test.yml run --rm backend pytest backend/tests/integration -m "integration"
+
+      - name: Stop services
+        if: always() # Ensure services are stopped even if tests fail
+        run: docker-compose -f docker-compose.yml -f docker-compose.test.yml down
+
+  # Optional: Frontend E2E Tests Job (Add if implementing E2E)
+  # frontend-e2e-tests:
+  #   name: Frontend E2E Tests
+  #   runs-on: ubuntu-latest
+  #   needs: backend-integration-tests
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
+  #     - name: Set up Docker Buildx
+  #       uses: docker/setup-buildx-action@v3
+  #     # TODO: Setup .env files/secrets
+  #     - name: Start all services (db, backend, frontend)
+  #       run: docker-compose -f docker-compose.yml -f docker-compose.test.yml up -d db backend frontend # Use test DB
+  #     - name: Wait for services
+  #       run: sleep 30 # Replace with health checks
+  #     - name: Run E2E tests (example with Playwright)
+  #       run: docker-compose -f docker-compose.yml -f docker-compose.test.yml exec -T frontend npx playwright test
+  #     - name: Stop services
+  #       if: always()
+  #       run: docker-compose -f docker-compose.yml -f docker-compose.test.yml down
+
+  build-images:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    # Run after tests pass on push/pull_request to main/develop
+    needs: [backend-integration-tests] # Add frontend-e2e-tests if implemented
+    # Only run this job on pushes to the main branch
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.REGISTRY_USERNAME }} # Assumes GHCR username secret
+          password: ${{ secrets.REGISTRY_PASSWORD }} # Assumes GHCR token/password secret
+
+      # TODO: Add steps to copy necessary .env files or set secrets for build args if needed
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true # Push the image
+          tags: ghcr.io/github-user-placeholder/magmon-backend:${{ github.sha }} # Placeholder registry
+          # target: production # Uncomment if backend Dockerfile uses multi-stage
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend # Context is frontend directory
+          file: ./frontend/Dockerfile # Dockerfile is inside frontend directory
+          push: true # Push the image
+          tags: ghcr.io/github-user-placeholder/magmon-frontend:${{ github.sha }} # Placeholder registry
+          # Target is implicitly the final stage (Nginx)
+
+  # Deployment Job (Manual Trigger)
+  deploy:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: build-images # Corrected dependency
+    if: github.event_name == 'workflow_dispatch' # Only run when manually triggered
+    environment: production # Optional: Define a GitHub environment for protection rules
+    steps:
+      # Placeholder: Add steps here to connect to the deployment server (e.g., SSH)
+      # - name: Connect to Server via SSH
+      #   uses: appleboy/ssh-action@master
+      #   with:
+      #     host: ${{ secrets.DEPLOY_HOST }}
+      #     username: ${{ secrets.DEPLOY_USER }}
+      #     key: ${{ secrets.DEPLOY_SSH_KEY }}
+      #     script: |
+      #       # Commands below will run on the remote server
+      #       cd /path/to/your/app # Navigate to your deployment directory
+
+      # Placeholder: Add steps here to set up environment variables on the server if needed
+      # - name: Set up Environment Variables on Server
+      #   run: |
+      #     echo "Setting environment variables on server..."
+      #     # Example: echo "export DATABASE_URL=${{ secrets.PROD_DATABASE_URL }}" >> ~/.bashrc
+
+      - name: Create docker-compose.override.yml
+        # This step assumes execution on the target deployment server
+        # Adapt the command if using SSH action's `script` block or similar
+        run: |
+          echo "Creating temporary docker-compose.override.yml..."
+          cat <<EOF > docker-compose.override.yml
+          # Auto-generated by CI workflow - DO NOT EDIT MANUALLY
+          version: '3.8'
+          services:
+            backend:
+              image: ghcr.io/github-user-placeholder/magmon-backend:${{ github.sha }}
+            frontend:
+              image: ghcr.io/github-user-placeholder/magmon-frontend:${{ github.sha }}
+          EOF
+          echo "Override file created:"
+          cat docker-compose.override.yml
+
+      - name: Run production database migrations
+        # This step assumes execution on the target deployment server
+        run: docker-compose -f docker-compose.prod.yml -f docker-compose.override.yml run --rm backend flask db upgrade
+
+      - name: Deploy Services with Specific Image Tags
+        # This step assumes execution on the target deployment server
+        run: |
+          echo "Pulling latest images specified in override..."
+          docker-compose -f docker-compose.prod.yml -f docker-compose.override.yml pull backend frontend
+          echo "Deploying services..."
+          docker-compose -f docker-compose.prod.yml -f docker-compose.override.yml up -d --force-recreate backend frontend
+
+      - name: Remove temporary docker-compose.override.yml
+        # This step assumes execution on the target deployment server
+        if: always() # Ensure cleanup even if deployment fails
+        run: |
+          echo "Removing temporary docker-compose.override.yml..."
+          rm -f docker-compose.override.yml

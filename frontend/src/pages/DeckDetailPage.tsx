@@ -63,8 +63,6 @@ interface DeckGameHistoryItem {
 }
 
 // --- API Base URL ---
-const API_BASE_URL = 'http://127.0.0.1:5004/api'; // Use port 5004
-
 function DeckDetailPage({ loggedInUser }: { loggedInUser: User | null }) {
     const { deckId } = useParams<{ deckId: string }>();
     const location = useLocation();

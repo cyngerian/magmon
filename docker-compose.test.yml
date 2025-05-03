@@ -1,0 +1,28 @@
+# docker-compose.test.yml
+# Overrides for running integration tests
+
+version: '3.8'
+
+services:
+  db:
+    # Override environment variables to use a separate test database
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB_TEST:-magmon_test} # Use a different DB name for tests
+      POSTGRES_USER: ${POSTGRES_USER:-magmon_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-magmon_password}
+    # Optionally use a different volume for test data if needed, or rely on test setup/teardown
+    # volumes:
+    #   - postgres_test_data:/var/lib/postgresql/data
+
+  backend:
+    # Override the DATABASE_URL to point to the test database
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-magmon_user}:${POSTGRES_PASSWORD:-magmon_password}@db:5432/${POSTGRES_DB_TEST:-magmon_test}
+      # Ensure Flask debug is off during tests if it affects behavior, or keep it on for better test debugging
+      FLASK_DEBUG: 0
+      # Override the command to just run pytest, not the web server
+      # Note: Migrations should be handled by test setup fixtures or a pre-test script
+    # command: ["pytest", "tests/"] # This might be run via 'docker-compose run' instead
+
+# volumes:
+#   postgres_test_data: # Define the test volume if used

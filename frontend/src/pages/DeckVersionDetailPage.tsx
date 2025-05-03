@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
-import apiClient from '../apiClient';
 import { useParams, Link } from 'react-router-dom';
 import { getDeckDetails, getDeckVersion } from '../apiClient';
 

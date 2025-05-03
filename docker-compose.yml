@@ -17,11 +17,13 @@ services:
       - magmon_network # Add network
 
   backend:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     container_name: magmon_backend_dev
     restart: unless-stopped
     env_file:
-      - ./backend/.env # Load backend specific env vars (SECRET_KEY)
+      - ./.env # Load root env vars (DB credentials, etc.)
     environment:
       # Override DATABASE_URL to point to the db service
       DATABASE_URL: postgresql://${POSTGRES_USER:-magmon_user}:${POSTGRES_PASSWORD:-magmon_password}@db:5432/${POSTGRES_DB:-magmon_dev}
@@ -30,14 +32,16 @@ services:
       # Add any other necessary backend env vars here
     ports:
       - "5004:5004"
-    volumes:
-      - ./backend:/app # Mount host code into container for live reload
+    volumes: # Mount host code into container for hot-reloading
+      - ./backend:/app/backend
       # Optional: Mount uploads if they should persist outside container volume
       # - ./backend/app/static/uploads:/app/app/static/uploads
     depends_on:
       - db
     networks:
       - magmon_network # Add network
+    # Run migrations automatically on startup for development convenience
+    command: bash -c "flask db upgrade && gunicorn --bind 0.0.0.0:5004 --timeout 120 wsgi:app"
 
   frontend:
     build: ./frontend
