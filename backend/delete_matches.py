@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 try:
     from app import db, create_app
-    from app.models import Match, MatchPlayer # Import MatchPlayer
+    from app.models import Match, MatchPlayer  # Import MatchPlayer
 
     print("Creating app context...")
     app = create_app()
@@ -27,7 +27,11 @@ try:
 
 except ImportError as e:
     print(f"ImportError: {e}", file=sys.stderr)
-    print("Ensure this script is run from the 'backend' directory or the app module is findable.", file=sys.stderr)
+    print(
+        "Ensure this script is run from the 'backend' directory or the app"
+        " module is findable.",
+        file=sys.stderr,
+    )
     exit(1)
 except Exception as e:
     print(f"An error occurred: {e}", file=sys.stderr)

@@ -6,6 +6,6 @@ with app.app_context():
     if user:
         user.is_admin = True
         db.session.commit()
-        print(f'User {user.username} is now an admin')
+        print(f"User {user.username} is now an admin")
     else:
-        print('User with ID 1 not found')
+        print("User with ID 1 not found")

@@ -21,20 +21,25 @@ try:
     game_night = GameNight.query.filter_by(game_date=target_date).first()
 
     if game_night:
-        print(f"Found Game Night ID: {game_night.id} (Status: {game_night.status.value})")
+        print(f"Found Game Night ID: {game_night.id}")
+        print(f"  Status: {game_night.status.value}")
         print(f"Querying registrations for Game Night ID: {game_night.id}...")
 
         # Query registrations joining User and Deck tables
-        registrations = db.session.query(GameNightRegistration, User, Deck)\
-            .join(User, GameNightRegistration.user_id == User.id)\
-            .join(Deck, GameNightRegistration.deck_id == Deck.id)\
-            .filter(GameNightRegistration.game_night_id == game_night.id)\
+        registrations = (
+            db.session.query(GameNightRegistration, User, Deck)
+            .join(User, GameNightRegistration.user_id == User.id)
+            .join(Deck, GameNightRegistration.deck_id == Deck.id)
+            .filter(GameNightRegistration.game_night_id == game_night.id)
             .all()
+        )
 
         if registrations:
             print("\n--- Registrations Found ---")
             for reg, user, deck in registrations:
-                print(f"- User: {user.username} (ID: {user.id}), Deck: {deck.name} (ID: {deck.id}), Commander: {deck.commander}")
+                print(f"- User: {user.username} (ID: {user.id})")
+                print(f"  Deck: {deck.name} (ID: {deck.id})")
+                print(f"  Commander: {deck.commander}")
             print("---------------------------\n")
         else:
             print("No registrations found for this game night.")
@@ -44,7 +49,11 @@ try:
 
 except ImportError as e:
     print(f"ImportError: {e}", file=sys.stderr)
-    print("Ensure this script is run from the project root or the app module is findable.", file=sys.stderr)
+    print(
+        "Ensure this script is run from the project root or the app module is"
+        " findable.",
+        file=sys.stderr,
+    )
     exit(1)
 except Exception as e:
     print(f"An error occurred: {e}", file=sys.stderr)
