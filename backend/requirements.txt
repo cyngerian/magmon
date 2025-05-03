@@ -26,3 +26,5 @@ gunicorn # Added for running the app in production/Docker
 requests
 
 pytest-mock
+
+pre-commit>=3.0.0 # Added for pre-commit hooks
